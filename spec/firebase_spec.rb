@@ -26,14 +26,14 @@ describe "Firebase" do
 
   describe "set" do
     it "writes and returns the data" do
-      expect(@firebase).to receive(:process).with(:put, 'users/info', data, {})
+      expect(@firebase).to receive(:process).with(:put, 'users/info', data, {}, {})
       @firebase.set('users/info', data)
     end
   end
 
   describe "get" do
     it "returns the data" do
-      expect(@firebase).to receive(:process).with(:get, 'users/info', nil, {})
+      expect(@firebase).to receive(:process).with(:get, 'users/info', nil, {}, {})
       @firebase.get('users/info')
     end
 
@@ -42,7 +42,7 @@ describe "Firebase" do
         :orderBy => '"$key"',
         :startAt => '"A1"'
       }
-      expect(@firebase).to receive(:process).with(:get, 'users/info', nil, params)
+      expect(@firebase).to receive(:process).with(:get, 'users/info', nil, params, {})
       @firebase.get('users/info', params)
     end
 
@@ -73,14 +73,14 @@ describe "Firebase" do
 
   describe "push" do
     it "writes the data" do
-      expect(@firebase).to receive(:process).with(:post, 'users', data, {})
+      expect(@firebase).to receive(:process).with(:post, 'users', data, {}, {})
       @firebase.push('users', data)
     end
   end
 
   describe "delete" do
     it "returns true" do
-      expect(@firebase).to receive(:process).with(:delete, 'users/info', nil, {})
+      expect(@firebase).to receive(:process).with(:delete, 'users/info', nil, {}, {})
       @firebase.delete('users/info')
     end
   end
@@ -92,12 +92,80 @@ describe "Firebase" do
     end
   end
 
+  describe '#transaction' do
+    let(:etag_value) { 'i0Ir/zYOL6grKBc07+n2ncm/6as=' }
+    let(:new_data) { {'name' => 'Oscar Wilde'} }
+    let(:path) { 'users/info' }
+    let(:mock_etag_response) do
+      Firebase::Response.new(double({
+        :body => data.to_json,
+        :status => 200,
+        :headers => {
+          'ETag' => etag_value
+        }
+      }))
+    end
+    let(:mock_set_success_response) do
+      Firebase::Response.new(double({
+        :body => new_data.to_json,
+        :status => 200
+      }))
+    end
+
+    after(:each) do |example|
+      block_data = nil
+      resp = @firebase.transaction(path, max_retries: example.metadata[:max_retries]) do |data|
+        block_data = JSON.parse data.to_json
+        new_data
+      end
+      expect(block_data).to eql(data)
+      if example.metadata[:max_retries].nil?
+        expect(resp.body).to eql(new_data)
+      else
+        expect(resp.body).to eql(data)
+        expect(resp.success?).to eql(false)
+      end
+    end
+
+    context "data at path does not change" do
+      it 'updates and returns the data' do
+        expect(@firebase).to receive(:get).with(path, {}, { "X-Firebase-ETag": true }).and_return(mock_etag_response)
+        expect(@firebase).to receive(:set).with(path, new_data, {}, { "if-match": etag_value }).and_return(mock_set_success_response)
+      end
+    end
+
+    context "data at path changes" do
+      let(:new_etag_value) { 'i0Ir/zYOL6grKBc09+n2ncm/7as=' }
+
+      before(:each) do
+        mock_set_error_response = Firebase::Response.new(double({
+          :body => data.to_json,
+          :status => 412,
+          :headers => {
+            'ETag' => new_etag_value
+          }
+        }))
+        expect(@firebase).to receive(:get).with(path, {}, { "X-Firebase-ETag": true }).and_return(mock_etag_response)
+        expect(@firebase).to receive(:set).with(path, new_data, {}, { "if-match": etag_value }).and_return(mock_set_error_response)
+      end
+
+      it "retries incase the data at path changes in the meantime" do
+        expect(@firebase).to receive(:set).with(path, new_data, {}, { "if-match": new_etag_value }).and_return(mock_set_success_response)
+      end
+
+      it "does not retry after max_retries is reached", max_retries: 0 do
+        expect(@firebase).not_to receive(:set).with(path, new_data, {}, { "if-match": new_etag_value })
+      end
+    end
+  end
+
   describe "http processing" do
     it "sends custom auth query" do
       firebase = Firebase::Client.new('https://test.firebaseio.com', 'secret')
       expect(firebase.request).to receive(:request).with(:get, "todos.json", {
         :body => nil,
         :query => {:auth => "secret", :foo => 'bar'},
+        :header => {},
         :follow_redirect => true
       })
       firebase.get('todos', :foo => 'bar')

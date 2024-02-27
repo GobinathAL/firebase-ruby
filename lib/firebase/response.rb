@@ -21,5 +21,9 @@ module Firebase
     def code
       response.status
     end
+
+    def etag
+      response.headers['ETag']
+    end
   end
 end

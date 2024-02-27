@@ -36,24 +36,24 @@ module Firebase
 
     # Writes and returns the data
     #   Firebase.set('users/info', { 'name' => 'Oscar' }) => { 'name' => 'Oscar' }
-    def set(path, data, query={})
-      process :put, path, data, query
+    def set(path, data, query={}, header={})
+      process :put, path, data, query, header
     end
 
     # Returns the data at path
-    def get(path, query={})
-      process :get, path, nil, query
+    def get(path, query={}, header={})
+      process :get, path, nil, query, header
     end
 
     # Writes the data, returns the key name of the data added
     #   Firebase.push('users', { 'age' => 18}) => {"name":"-INOQPH-aV_psbk3ZXEX"}
-    def push(path, data, query={})
-      process :post, path, data, query
+    def push(path, data, query={}, header={})
+      process :post, path, data, query, header
     end
 
     # Deletes the data at path and returs true
-    def delete(path, query={})
-      process :delete, path, nil, query
+    def delete(path, query={}, header={})
+      process :delete, path, nil, query, header
     end
 
     # Write the data at path but does not delete ommited children. Returns the data
@@ -62,9 +62,37 @@ module Firebase
       process :patch, path, data, query
     end
 
+    # Writes the data at path in a transactional manner. So the set fails if the value changes in the meantime. Returns the data
+    # Supply a block to return the new value of the node
+    # firebase_client.transaction("users/info", max_retries: 0) do |user_info_snapshot|
+    #     user_info_snapshot["name"] = "new_name"
+    #     user_info_snapshot
+    # end
+    def transaction(path, max_retries: nil, &block)
+      response = get path, {}, { "X-Firebase-ETag": true }
+      return response unless response.success?
+
+      etag_value = response.etag
+      data = response.body
+
+      data = block.call(data)
+
+      no_of_retries = 0
+      loop do
+        response = set path, data, {}, { "if-match": etag_value }
+        break if response.success?
+
+        no_of_retries += 1
+        etag_value = response.etag
+        break if max_retries && no_of_retries > max_retries
+      end
+
+      response
+    end
+
     private
 
-    def process(verb, path, data=nil, query={})
+    def process(verb, path, data=nil, query={}, header= {})
       if path[0] == '/'
         raise(ArgumentError.new("Invalid path: #{path}. Path must be relative"))
       end
@@ -78,6 +106,7 @@ module Firebase
       Firebase::Response.new @request.request(verb, "#{path}.json", {
         :body             => data.to_json,
         :query            => (@secret ? { :auth => @secret }.merge(query) : query),
+        :header           => header,
         :follow_redirect  => true
       })
     end
